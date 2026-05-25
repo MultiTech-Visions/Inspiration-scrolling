@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#16181d">
+  <title>Inspiration Scroll</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="feed-body">
+  <header class="topbar">
+    <div class="brand">inspiration scroll</div>
+    <nav>
+      <a href="/library">library</a>
+      <a href="/settings">settings</a>
+    </nav>
+  </header>
+
+  <main id="feed" class="feed">
+    <div id="empty-state" class="empty-state" hidden>
+      <p>Your queue is empty right now.</p>
+      <button id="run-now-from-empty" type="button">Generate cards</button>
+    </div>
+    <div id="card-stack" class="card-stack"></div>
+    <div id="queue-meta" class="queue-meta"></div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
