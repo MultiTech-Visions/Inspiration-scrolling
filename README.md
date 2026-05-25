@@ -12,7 +12,7 @@ Once a day (and on demand), a single pipeline takes three inputs:
 
 …and produces three kinds of typed cards into one consumption queue:
 
-- **discovery** — model-synthesized cards drawing on real online sources, found via Anthropic's built-in `web_search` (open internet, with an optional blocked-domains list you control). Followable. Age out fast.
+- **discovery** — model-synthesized cards drawing on real online sources. Produced in a single batched agent loop per run: the model uses `web_search` (open internet, blocked-domains list you control) to browse, `bookmark_idea(url, title, hook)` as a working-memory scratchpad while it browses, then writes N cards from the strongest bookmarks in one response. Followable. Age out fast.
 - **codebase** — model reasoning over one of your own repos (security updates, dead deps, refactor ideas). Generated only when you ask for them by name.
 - **learning** — bite-sized cards on goals you've stated. Tidbits, questions, flashcards, quizzes. Carry spaced-repetition state and resurface on a schedule.
 
@@ -200,7 +200,8 @@ All stored as strings in the `settings` table; seeded with defaults so it works 
 | `engagement_boost_threshold`     | 3                | User messages required on a card before the topic boost fires      |
 | `engagement_boost_amount`        | 0.4              | Topic-weight delta applied at the threshold                        |
 | `blocked_domains`                | (empty)          | Comma-separated domains the discovery `web_search` must skip       |
-| `discovery_search_max_uses`      | 4                | Max `web_search` calls the model can make per discovery card       |
+| `discovery_search_max_uses`      | 15               | Max `web_search` calls in the batched discovery agent loop (per run, not per card) |
+| `discovery_agent_max_steps`      | 20               | Max client-tool turns (bookmark_idea calls) per batched discovery loop |
 | `codebase_tool_max_steps`        | 12               | Max GitHub tool calls the agent loop can make per codebase card    |
 
 ## HTTP routes
@@ -260,8 +261,9 @@ GET  /api/cards/:id/sources         provenance sources for a card
 │   ├── routes.js             # HTTP routing — static files + JSON API
 │   └── pipeline/
 │       ├── activity.js       # GitHub activity → compact summary for the LLM
-│       ├── themes.js         # LLM step: activity + preferences → themes
-│       ├── discovery.js      # LLM step: theme + web_search → discovery card
+│       ├── digest.js         # LLM step: raw signals → compact insights digest (persisted in `digests` table)
+│       ├── themes.js         # LLM step: digest + activity → themes
+│       ├── discovery.js      # Agent loop: themes + digest + web_search + bookmark_idea → batched discovery cards
 │       ├── codebase.js       # Agent loop: repo data + GitHub tools → codebase card
 │       └── learning.js       # LLM step + spaced repetition + auto-mastery + goal lifecycle
 └── public/

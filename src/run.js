@@ -8,8 +8,9 @@ const { parseRequest } = require('./payload');
 const { countQueued, expireOldDiscoveries } = require('./cards');
 
 const { gatherActivity, persistCursor } = require('./pipeline/activity');
-const { gatherPreferences, chooseThemes } = require('./pipeline/themes');
-const { synthesizeDiscoveryFromTheme } = require('./pipeline/discovery');
+const { chooseThemes } = require('./pipeline/themes');
+const { generateDigest } = require('./pipeline/digest');
+const { synthesizeDiscoveryBatch } = require('./pipeline/discovery');
 const { synthesizeCodebaseForRequest } = require('./pipeline/codebase');
 const { listActiveGoals, synthesizeLearningForGoal, createLearningGoal } = require('./pipeline/learning');
 
@@ -43,19 +44,35 @@ async function runOnce({ trigger }) {
     requests_processed: 0,
     requests_errored: 0,
     themes: 0,
+    digest_id: null,
   };
 
   try {
     // Step 1: housekeeping — expire stale discovery cards.
     await expireOldDiscoveries(stalenessDays);
 
-    // Step 2: read inputs.
+    // Step 2: read raw inputs.
     const activity = await gatherActivity();
-    const preferences = await gatherPreferences();
     const pendingRequests = await loadPendingRequests();
 
-    // Step 3: process the deferred request queue. Each request opens its own
-    // sub-path; we do not let one bad request break the whole run.
+    // Step 3: distill user signals into a digest. One cheap LLM call; the
+    // result feeds the more expensive downstream calls so they don't each
+    // re-read the raw preference + reaction tables.
+    let digest = null;
+    try {
+      digest = await generateDigest({ runId: lock.runId, activitySummary: activity.summary });
+      const last = await queryOne('SELECT id FROM digests ORDER BY id DESC LIMIT 1');
+      summary.digest_id = last ? last.id : null;
+    } catch (err) {
+      log.push(`digest step failed (continuing without): ${(err.message || '').split('\n')[0]}`);
+    }
+
+    // Step 4: process the deferred request queue. Non-discovery requests
+    // (learning_goal, codebase_audit) run their own dedicated paths.
+    // discovery_topic requests are accumulated and folded into the batched
+    // discovery call below — that way they participate in the same shared
+    // web_search budget as the auto-themed cards.
+    const forcedDiscoveryThemes = [];
     for (const req of pendingRequests) {
       try {
         if (req.body.intent === 'learning_goal') {
@@ -66,17 +83,23 @@ async function runOnce({ trigger }) {
           const goal = await queryOne('SELECT id, topic, mastery_threshold, correct_streak, total_reviewed, total_correct FROM goals WHERE id = ?', [goalId]);
           await synthesizeLearningForGoal(goal);
           summary.inserted.learning++;
+          await markRequestProcessed(req.id);
+          summary.requests_processed++;
         } else if (req.body.intent === 'codebase_audit') {
           await synthesizeCodebaseForRequest(req);
           summary.inserted.codebase++;
+          await markRequestProcessed(req.id);
+          summary.requests_processed++;
         } else if (req.body.intent === 'discovery_topic') {
-          // Treated as a topic the user explicitly wants seen tonight; push
-          // through the discovery pipeline with weight=1.
-          await synthesizeDiscoveryFromTheme({ label: req.body.topic, weight: 1.0, reasoning: 'user requested' });
-          summary.inserted.discovery++;
+          forcedDiscoveryThemes.push({
+            label: req.body.topic,
+            weight: 1.0,
+            reasoning: 'user requested',
+            _requestId: req.id,
+          });
+          // We mark this as processed once the discovery batch completes —
+          // see Step 5.
         }
-        await query("UPDATE requests SET status = 'processed', processed_at = NOW(), error = NULL WHERE id = ?", [req.id]);
-        summary.requests_processed++;
       } catch (err) {
         const msg = String(err.stack || err.message || err);
         log.push(`request ${req.id} failed: ${msg.split('\n')[0]}`);
@@ -85,36 +108,51 @@ async function runOnce({ trigger }) {
       }
     }
 
-    // Step 4: refill discovery queue up to target.
+    // Step 5: refill discovery queue up to target via ONE batched agentic
+    // call. Auto-themes + any user-requested topics are all served in the
+    // same pass so they share the web_search budget.
     let queuedNow = await countQueued();
-    if (queuedNow < targetQueue) {
-      const themes = await chooseThemes({
+    if (queuedNow < targetQueue || forcedDiscoveryThemes.length > 0) {
+      const autoThemes = await chooseThemes({
         activitySummary: activity.summary,
         requests: pendingRequests,
-        preferences,
+        digest,
       });
-      summary.themes = themes.length;
+      summary.themes = autoThemes.length;
 
+      const allThemes = [...forcedDiscoveryThemes, ...autoThemes];
       const discoveryQuotaPerRun = await getInt('discovery_per_run');
-      const sortedThemes = [...themes].sort((a, b) => b.weight - a.weight);
-      let made = 0;
-      for (const theme of sortedThemes) {
-        if (made >= discoveryQuotaPerRun) break;
-        if (queuedNow >= targetQueue) break;
+      const needed = Math.max(0, targetQueue - queuedNow);
+      // Honor at least one card per forced theme; the rest of the budget
+      // covers auto-themed refill up to discovery_per_run.
+      const target = Math.min(
+        Math.max(forcedDiscoveryThemes.length, needed),
+        discoveryQuotaPerRun + forcedDiscoveryThemes.length
+      );
+
+      if (target > 0 && allThemes.length > 0) {
         try {
-          const cardId = await synthesizeDiscoveryFromTheme(theme);
-          if (cardId) {
-            made++;
-            queuedNow++;
-            summary.inserted.discovery++;
-          }
+          const { cardIds } = await synthesizeDiscoveryBatch({
+            themes: allThemes,
+            digest,
+            targetCount: target,
+          });
+          summary.inserted.discovery += cardIds.length;
         } catch (err) {
-          log.push(`discovery theme "${theme.label}" failed: ${(err.message || '').split('\n')[0]}`);
+          log.push(`discovery batch failed: ${(err.message || '').split('\n')[0]}`);
         }
+      }
+
+      // Mark discovery_topic requests processed regardless of whether the
+      // batch produced a card for each one — failure is logged, but a single
+      // failed topic shouldn't block the request from being marked drained.
+      for (const t of forcedDiscoveryThemes) {
+        await markRequestProcessed(t._requestId);
+        summary.requests_processed++;
       }
     }
 
-    // Step 5: refresh learning cards for active goals whose cards have all
+    // Step 6: refresh learning cards for active goals whose cards have all
     // consumed or expired. The queue-gate JOIN handles the pause/unpause
     // story; we just top up so active goals never stall the queue.
     const learningQuotaPerRun = await getInt('learning_per_run');
@@ -133,7 +171,7 @@ async function runOnce({ trigger }) {
       }
     }
 
-    // Step 6: persist activity cursor only after a successful run.
+    // Step 7: persist activity cursor only after a successful run.
     if (activity.latestCursor) {
       await persistCursor(activity.latestCursor);
     }
@@ -146,6 +184,10 @@ async function runOnce({ trigger }) {
     await releaseRunLock({ runId: lock.runId, error: err });
     throw err;
   }
+}
+
+async function markRequestProcessed(id) {
+  await query("UPDATE requests SET status = 'processed', processed_at = NOW(), error = NULL WHERE id = ?", [id]);
 }
 
 const MAX_REQUESTS_PER_RUN = 16;

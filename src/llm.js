@@ -19,11 +19,7 @@ function client() {
 // (constructed in code, never interpolated into instruction). Returns the
 // parsed JSON object. We refuse to silently recover from malformed model
 // output — the caller asked for JSON, if we can't parse JSON we throw.
-//
-// Optional `webSearch` enables Anthropic's server-side web_search tool. When
-// enabled, the response also carries the list of URLs the search actually
-// returned (callers use this to filter out any URLs the model hallucinated).
-async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096, webSearch = null }) {
+async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096 }) {
   if (typeof promptKey !== 'string' || promptKey.length === 0) {
     throw new Error('callPipelineStep requires a promptKey');
   }
@@ -35,7 +31,7 @@ async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096, webSea
   const model = await getString('llm_model');
   const effort = await getString('llm_effort');
 
-  const request = {
+  const response = await client().messages.create({
     model,
     max_tokens: maxTokens,
     thinking: { type: 'adaptive' },
@@ -47,44 +43,14 @@ async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096, webSea
         cache_control: { type: 'ephemeral' },
       },
     ],
-    messages: [
-      { role: 'user', content: dataBlock },
-    ],
-  };
+    messages: [{ role: 'user', content: dataBlock }],
+  });
 
-  if (webSearch) {
-    const tool = {
-      type: 'web_search_20250305',
-      name: 'web_search',
-      max_uses: webSearch.maxUses,
-    };
-    if (Array.isArray(webSearch.blockedDomains) && webSearch.blockedDomains.length > 0) {
-      tool.blocked_domains = webSearch.blockedDomains;
-    }
-    request.tools = [tool];
-  }
-
-  const response = await client().messages.create(request);
-
-  // Collect every URL the web_search tool actually returned. The model may
-  // still cite a different URL in its JSON answer — caller is responsible for
-  // filtering source_urls against this list so we never publish a fabricated
-  // link.
-  const searchResults = [];
   let raw = null;
   for (const block of response.content) {
-    if (block.type === 'web_search_tool_result') {
-      const items = Array.isArray(block.content) ? block.content : [];
-      for (const item of items) {
-        if (item && item.type === 'web_search_result' && typeof item.url === 'string') {
-          searchResults.push({ url: item.url, title: item.title || null });
-        }
-      }
-    } else if (block.type === 'text') {
-      // Keep the LAST text block — when web_search runs, the model emits an
-      // intermediate text block before the tool call and the final JSON
-      // answer afterward.
+    if (block.type === 'text') {
       raw = block.text;
+      break;
     }
   }
   if (raw === null) {
@@ -100,15 +66,14 @@ async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096, webSea
   }
   return {
     parsed,
-    searchResults,
     usage: response.usage,
     stop_reason: response.stop_reason,
   };
 }
 
 // If the model wrapped its output in ```json ... ``` despite being asked not
-// to, strip the fence. We do this surgically — anything else passes through
-// unmodified so JSON.parse can fail loudly.
+// to, strip the fence. Anything else passes through unmodified so JSON.parse
+// can fail loudly.
 function stripCodeFence(s) {
   if (!s.startsWith('```')) return s;
   const firstNewline = s.indexOf('\n');
@@ -118,15 +83,25 @@ function stripCodeFence(s) {
   return body.trim();
 }
 
-// Agentic pipeline step: same instruction-then-data shape, but the model has
-// client-side tools available and we loop until it stops calling them (or we
-// hit the step budget). The final text block is parsed as JSON exactly like
-// callPipelineStep.
+// Agentic pipeline step: the model has tools available (any mix of custom
+// client-side tools that we dispatch + Anthropic server tools like web_search)
+// and we loop until it stops calling client tools (or hits maxSteps). The
+// final text block is parsed as JSON exactly like callPipelineStep.
+//
+// `tools`     — array of custom client-side tool defs (name, description,
+//               input_schema). Their handlers are wired through `dispatch`.
+// `dispatch`  — async (toolName, input) → result. Required when `tools` has
+//               entries; ignored otherwise.
+// `webSearch` — optional. { maxUses, blockedDomains } enables Anthropic's
+//               server-side web_search tool. Search URLs returned across ALL
+//               loop iterations are accumulated and returned to the caller so
+//               source_urls can be filtered against fabrications.
 async function runAgenticStep({
   promptKey,
   initialMessage,
-  tools,
-  dispatch,
+  tools = [],
+  dispatch = null,
+  webSearch = null,
   maxTokens = 4096,
   maxSteps = 12,
 }) {
@@ -136,19 +111,36 @@ async function runAgenticStep({
   if (typeof initialMessage !== 'string' || initialMessage.length === 0) {
     throw new Error('runAgenticStep requires initialMessage');
   }
-  if (!Array.isArray(tools) || tools.length === 0) {
-    throw new Error('runAgenticStep requires non-empty tools array');
+  if (!Array.isArray(tools)) {
+    throw new Error('runAgenticStep: tools must be an array');
   }
-  if (typeof dispatch !== 'function') {
-    throw new Error('runAgenticStep requires dispatch function');
+  if (tools.length > 0 && typeof dispatch !== 'function') {
+    throw new Error('runAgenticStep: dispatch function required when tools are provided');
+  }
+  if (tools.length === 0 && !webSearch) {
+    throw new Error('runAgenticStep: at least one of `tools` or `webSearch` must be provided');
   }
 
   const instruction = await getInstruction(promptKey);
   const model = await getString('llm_model');
   const effort = await getString('llm_effort');
 
+  const apiTools = [...tools];
+  if (webSearch) {
+    const searchTool = {
+      type: 'web_search_20250305',
+      name: 'web_search',
+      max_uses: webSearch.maxUses,
+    };
+    if (Array.isArray(webSearch.blockedDomains) && webSearch.blockedDomains.length > 0) {
+      searchTool.blocked_domains = webSearch.blockedDomains;
+    }
+    apiTools.push(searchTool);
+  }
+
   const messages = [{ role: 'user', content: initialMessage }];
   const toolTrace = [];
+  const searchResults = [];
   let response = null;
 
   for (let step = 0; step < maxSteps; step++) {
@@ -165,8 +157,21 @@ async function runAgenticStep({
         },
       ],
       messages,
-      tools,
+      tools: apiTools,
     });
+
+    // Accumulate web_search results from this iteration before deciding
+    // whether to loop. The model emits these between turns when it uses the
+    // server tool.
+    for (const block of response.content) {
+      if (block.type !== 'web_search_tool_result') continue;
+      const items = Array.isArray(block.content) ? block.content : [];
+      for (const item of items) {
+        if (item && item.type === 'web_search_result' && typeof item.url === 'string') {
+          searchResults.push({ url: item.url, title: item.title || null });
+        }
+      }
+    }
 
     if (response.stop_reason !== 'tool_use') break;
 
@@ -175,6 +180,9 @@ async function runAgenticStep({
     const toolResults = [];
     for (const block of response.content) {
       if (block.type !== 'tool_use') continue;
+      // Server tools (web_search) are handled by Anthropic and never reach us
+      // as a tool_use block — they show up as web_search_tool_result above.
+      // Anything we see here is a client tool we own.
       let result;
       let isError = false;
       try {
@@ -220,6 +228,7 @@ async function runAgenticStep({
   return {
     parsed,
     toolTrace,
+    searchResults,
     usage: response.usage,
     stop_reason: response.stop_reason,
   };

@@ -1,41 +1,24 @@
 'use strict';
 
 const { callPipelineStep } = require('../llm');
-const { query } = require('../db');
-
-// Read topic preferences + type appetite once per run, hand to the LLM as
-// part of the data block.
-async function gatherPreferences() {
-  const topics = await query('SELECT topic, weight FROM topic_preferences ORDER BY weight DESC LIMIT 32');
-  const appetite = await query('SELECT type, weight FROM type_appetite');
-  return { topics, appetite };
-}
-
-function formatTopics(topics) {
-  if (topics.length === 0) return '(none yet — user has not rated topics)';
-  return topics.map((t) => `- ${t.topic} (weight ${t.weight.toFixed(2)})`).join('\n');
-}
-
-function formatAppetite(appetite) {
-  return appetite.map((a) => `- ${a.type}: ${Number(a.weight).toFixed(2)}`).join('\n');
-}
+const { formatDigestForDownstream } = require('./digest');
 
 // activitySummary may be null (no GitHub activity / no username configured).
-// In that case we fall back to the topic-preference list as the seed; the
-// instruction explains how to handle a quiet night.
-async function chooseThemes({ activitySummary, requests, preferences }) {
+// digest may be null on the very first run before any signals have accrued.
+async function chooseThemes({ activitySummary, requests, digest }) {
   const parts = [];
+
+  parts.push(digest ? formatDigestForDownstream(digest) : '=== User insights digest ===\n(no digest yet — first run with this user)');
+
+  parts.push('');
   if (activitySummary) {
-    parts.push('=== Recent GitHub activity ===\n' + activitySummary);
+    parts.push('=== Recent GitHub activity (raw, freshest signal) ===');
+    parts.push(activitySummary);
   } else {
-    parts.push('=== Recent GitHub activity ===\n(none — explore adjacent topics from the preference list below)');
+    parts.push('=== Recent GitHub activity (raw) ===');
+    parts.push('(none — fall back to the digest)');
   }
-  parts.push('');
-  parts.push('=== Topic preferences (higher weight = user wants more of this) ===');
-  parts.push(formatTopics(preferences.topics));
-  parts.push('');
-  parts.push('=== Card-type appetite ===');
-  parts.push(formatAppetite(preferences.appetite));
+
   if (requests && requests.length > 0) {
     parts.push('');
     parts.push('=== Pending user requests this run ===');
@@ -64,4 +47,4 @@ async function chooseThemes({ activitySummary, requests, preferences }) {
   return parsed.themes;
 }
 
-module.exports = { gatherPreferences, chooseThemes };
+module.exports = { chooseThemes };

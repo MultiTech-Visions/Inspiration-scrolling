@@ -112,6 +112,19 @@ CREATE TABLE IF NOT EXISTS settings (
   PRIMARY KEY (setting_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Per-run distilled user-signal summary. Produced by the digest step at the
+-- start of every run, fed to downstream steps (themes, discovery) instead of
+-- the raw preference/reaction signals. History is preserved — one row per
+-- digest call — so you can see how the model's read of you evolves over time.
+CREATE TABLE IF NOT EXISTS digests (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  run_id          VARCHAR(64)     NULL,
+  payload         LONGTEXT        NOT NULL,
+  created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_digests_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Single-row run-lock control. Lock acquired via SELECT ... FOR UPDATE on id=1.
 CREATE TABLE IF NOT EXISTS run_lock (
   id              TINYINT         NOT NULL,
@@ -151,7 +164,8 @@ INSERT IGNORE INTO settings (setting_key, value) VALUES
   ('engagement_boost_threshold','3'),
   ('engagement_boost_amount',   '0.4'),
   ('blocked_domains',           ''),
-  ('discovery_search_max_uses', '4'),
+  ('discovery_search_max_uses', '15'),
+  ('discovery_agent_max_steps', '20'),
   ('codebase_tool_max_steps',   '12');
 
 -- ---------------------------------------------------------------------------
