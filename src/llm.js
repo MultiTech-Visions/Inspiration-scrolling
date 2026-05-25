@@ -19,7 +19,11 @@ function client() {
 // (constructed in code, never interpolated into instruction). Returns the
 // parsed JSON object. We refuse to silently recover from malformed model
 // output — the caller asked for JSON, if we can't parse JSON we throw.
-async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096 }) {
+//
+// Optional `webSearch` enables Anthropic's server-side web_search tool. When
+// enabled, the response also carries the list of URLs the search actually
+// returned (callers use this to filter out any URLs the model hallucinated).
+async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096, webSearch = null }) {
   if (typeof promptKey !== 'string' || promptKey.length === 0) {
     throw new Error('callPipelineStep requires a promptKey');
   }
@@ -31,7 +35,7 @@ async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096 }) {
   const model = await getString('llm_model');
   const effort = await getString('llm_effort');
 
-  const response = await client().messages.create({
+  const request = {
     model,
     max_tokens: maxTokens,
     thinking: { type: 'adaptive' },
@@ -46,15 +50,41 @@ async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096 }) {
     messages: [
       { role: 'user', content: dataBlock },
     ],
-  });
+  };
 
-  // Pull the first text block. We do NOT swallow anything — if the model
-  // returned only thinking with no text, that is a real error.
+  if (webSearch) {
+    const tool = {
+      type: 'web_search_20250305',
+      name: 'web_search',
+      max_uses: webSearch.maxUses,
+    };
+    if (Array.isArray(webSearch.blockedDomains) && webSearch.blockedDomains.length > 0) {
+      tool.blocked_domains = webSearch.blockedDomains;
+    }
+    request.tools = [tool];
+  }
+
+  const response = await client().messages.create(request);
+
+  // Collect every URL the web_search tool actually returned. The model may
+  // still cite a different URL in its JSON answer — caller is responsible for
+  // filtering source_urls against this list so we never publish a fabricated
+  // link.
+  const searchResults = [];
   let raw = null;
   for (const block of response.content) {
-    if (block.type === 'text') {
+    if (block.type === 'web_search_tool_result') {
+      const items = Array.isArray(block.content) ? block.content : [];
+      for (const item of items) {
+        if (item && item.type === 'web_search_result' && typeof item.url === 'string') {
+          searchResults.push({ url: item.url, title: item.title || null });
+        }
+      }
+    } else if (block.type === 'text') {
+      // Keep the LAST text block — when web_search runs, the model emits an
+      // intermediate text block before the tool call and the final JSON
+      // answer afterward.
       raw = block.text;
-      break;
     }
   }
   if (raw === null) {
@@ -70,6 +100,7 @@ async function callPipelineStep({ promptKey, dataBlock, maxTokens = 4096 }) {
   }
   return {
     parsed,
+    searchResults,
     usage: response.usage,
     stop_reason: response.stop_reason,
   };

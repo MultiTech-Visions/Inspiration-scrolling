@@ -12,7 +12,7 @@ Once a day (and on demand), a single pipeline takes three inputs:
 
 …and produces three kinds of typed cards into one consumption queue:
 
-- **discovery** — model-synthesized cards drawing on real online seed sources (currently Hacker News). Followable. Age out fast.
+- **discovery** — model-synthesized cards drawing on real online sources, found via Anthropic's built-in `web_search` (open internet, with an optional blocked-domains list you control). Followable. Age out fast.
 - **codebase** — model reasoning over one of your own repos (security updates, dead deps, refactor ideas). Generated only when you ask for them by name.
 - **learning** — bite-sized cards on goals you've stated. Tidbits, questions, flashcards, quizzes. Carry spaced-repetition state and resurface on a schedule.
 
@@ -25,7 +25,7 @@ You read the queue at bedtime. Reactions shape what tomorrow's run produces. Sav
 - **LLM:** Claude (default `claude-opus-4-7`) via the Anthropic SDK
 - **Frontend:** vanilla JS/HTML/CSS from `/public` (no React, no build step)
 - **Activity:** GitHub Events API + repo metadata/READMEs/manifests
-- **Seeds:** Hacker News Algolia search
+- **Seeds:** Anthropic `web_search` server tool (open web, blocklist-controlled)
 
 ## Quickstart (local)
 
@@ -116,9 +116,9 @@ The run pipeline triggers from four places. All four call the same `runOnce({ tr
 
 ### discovery
 - LLM-synthesized from retrieved online content
-- Carries real `source_urls` (every URL came from a seed, never invented)
+- Carries real `source_urls` (every URL came from a `web_search` result, never invented)
 - `card_sources` join rows for the followable provenance trail
-- Score blends theme weight + HN points (log-scaled) + seed recency
+- Score scales with theme weight
 - Ages out after `staleness_days` (default 7)
 - Followable: thumbs/heart shape topic weights; follow on a source shapes which sources retrieval visits first
 - Optional `video` payload: YouTube gets in-house iframe, Twitter/X/Instagram/Reddit get link-outs (embedding is unreliable/blocked there)
@@ -198,6 +198,8 @@ All stored as strings in the `settings` table; seeded with defaults so it works 
 | `discussion_max_history`         | 20               | Max thread messages sent to the model per discussion turn          |
 | `engagement_boost_threshold`     | 3                | User messages required on a card before the topic boost fires      |
 | `engagement_boost_amount`        | 0.4              | Topic-weight delta applied at the threshold                        |
+| `blocked_domains`                | (empty)          | Comma-separated domains the discovery `web_search` must skip       |
+| `discovery_search_max_uses`      | 4                | Max `web_search` calls the model can make per discovery card       |
 
 ## HTTP routes
 
@@ -249,7 +251,6 @@ GET  /api/cards/:id/sources         provenance sources for a card
 │   ├── llm.js                # Anthropic SDK boundary for the pipeline (themes, synthesis)
 │   ├── conversation.js       # Anthropic SDK boundary for per-card discussion threads
 │   ├── github.js             # GitHub Events / repo metadata / README / manifest fetchers
-│   ├── hackernews.js         # Algolia HN search for discovery seeds
 │   ├── sources.js            # upsert + follow + attach
 │   ├── cards.js              # the feed query, insert path, card lifecycle helpers
 │   ├── run.js                # the one orchestrator (scheduled/manual/immediate/refill)
@@ -257,7 +258,7 @@ GET  /api/cards/:id/sources         provenance sources for a card
 │   └── pipeline/
 │       ├── activity.js       # GitHub activity → compact summary for the LLM
 │       ├── themes.js         # LLM step: activity + preferences → themes
-│       ├── discovery.js      # LLM step: theme + HN seeds → discovery card
+│       ├── discovery.js      # LLM step: theme + web_search → discovery card
 │       ├── codebase.js       # LLM step: repo data → codebase card
 │       └── learning.js       # LLM step + spaced repetition + auto-mastery + goal lifecycle
 └── public/

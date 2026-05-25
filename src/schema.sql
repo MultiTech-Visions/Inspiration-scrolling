@@ -149,7 +149,9 @@ INSERT IGNORE INTO settings (setting_key, value) VALUES
   ('github_username',           ''),
   ('discussion_max_history',    '20'),
   ('engagement_boost_threshold','3'),
-  ('engagement_boost_amount',   '0.4');
+  ('engagement_boost_amount',   '0.4'),
+  ('blocked_domains',           ''),
+  ('discovery_search_max_uses', '4');
 
 -- ---------------------------------------------------------------------------
 -- Card discussion threads. One row per message in the thread; the conversation
