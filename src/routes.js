@@ -14,6 +14,8 @@ const { runOnce } = require('./run');
 const { getRunLockStatus, forceReleaseRunLock } = require('./runLock');
 const { parsePayload } = require('./payload');
 
+const { discuss, listMessages } = require('./conversation');
+
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 const STATIC_FILES = {
@@ -23,10 +25,14 @@ const STATIC_FILES = {
   '/settings.html': { file: 'settings.html', type: 'text/html; charset=utf-8' },
   '/library':       { file: 'library.html',  type: 'text/html; charset=utf-8' },
   '/library.html':  { file: 'library.html',  type: 'text/html; charset=utf-8' },
+  '/todos':         { file: 'todos.html',    type: 'text/html; charset=utf-8' },
+  '/todos.html':    { file: 'todos.html',    type: 'text/html; charset=utf-8' },
   '/styles.css':    { file: 'styles.css',    type: 'text/css; charset=utf-8' },
   '/app.js':        { file: 'app.js',        type: 'application/javascript; charset=utf-8' },
   '/settings.js':   { file: 'settings.js',   type: 'application/javascript; charset=utf-8' },
   '/library.js':    { file: 'library.js',    type: 'application/javascript; charset=utf-8' },
+  '/todos.js':      { file: 'todos.js',      type: 'application/javascript; charset=utf-8' },
+  '/markdown.js':   { file: 'markdown.js',   type: 'application/javascript; charset=utf-8' },
 };
 
 async function readJsonBody(req) {
@@ -181,6 +187,43 @@ async function route(req, res) {
       return sendJson(res, 200, { ok: true });
     }
 
+    if (method === 'GET' && pathname === '/api/todos') {
+      return await handleListTodos(res);
+    }
+
+    if (method === 'POST' && pathname.match(/^\/api\/todos\/\d+\/(done|undone|delete)$/)) {
+      const parts = pathname.split('/');
+      const card_id = parseInt(parts[3], 10);
+      const action = parts[4];
+      return await handleTodoAction(res, card_id, action);
+    }
+
+    if (method === 'GET' && pathname.match(/^\/api\/cards\/\d+\/messages$/)) {
+      const card_id = parseInt(pathname.split('/')[3], 10);
+      const card = await getCard(card_id);
+      if (card === null) return sendError(res, 404, 'card not found');
+      const messages = await listMessages(card_id);
+      return sendJson(res, 200, {
+        messages,
+        card: {
+          id: card.id,
+          type: card.type,
+          payload: card.payload,
+          discussion_context: card.payload.discussion_context,
+        },
+      });
+    }
+
+    if (method === 'POST' && pathname.match(/^\/api\/cards\/\d+\/messages$/)) {
+      const card_id = parseInt(pathname.split('/')[3], 10);
+      const body = await readJsonBody(req);
+      if (typeof body.content !== 'string' || body.content.trim().length === 0) {
+        return sendError(res, 400, 'content is required');
+      }
+      const result = await discuss({ card_id, user_text: body.content });
+      return sendJson(res, 200, result);
+    }
+
     return sendError(res, 404, `Not found: ${method} ${pathname}`);
   } catch (err) {
     console.error('Route error:', err);
@@ -241,8 +284,78 @@ async function handleFeedback(body, res) {
     return sendJson(res, 200, { ok: true });
   }
 
+  if (kind === 'save') {
+    if (!Number.isInteger(body.card_id)) return sendError(res, 400, 'card_id required');
+    // Save = drop from feed, surface on /todos. Apply a small positive topic
+    // bump while we're here — saving is a deliberate positive signal.
+    const card = await getCard(body.card_id);
+    if (card === null) return sendError(res, 404, 'card not found');
+    await query("UPDATE cards SET status = 'saved', saved_at = NOW() WHERE id = ?", [body.card_id]);
+    if (card.type === 'discovery' && Array.isArray(card.payload.topics)) {
+      for (const t of card.payload.topics.slice(0, 8)) {
+        await query(
+          'INSERT INTO topic_preferences (topic, weight) VALUES (?, GREATEST(0.1, 1.0 + 0.5)) ON DUPLICATE KEY UPDATE weight = GREATEST(0.1, weight + 0.5)',
+          [t]
+        );
+      }
+    }
+    await query("UPDATE type_appetite SET weight = GREATEST(0.1, weight + 0.2) WHERE type = ?", [card.type]);
+    return sendJson(res, 200, { ok: true });
+  }
+
   return sendError(res, 400, `Unknown feedback kind: ${kind}`);
 }
+
+async function handleListTodos(res) {
+  const rows = await query(
+    `SELECT c.id, c.type, c.status, c.goal_id, c.payload, c.score, c.created_at,
+            c.saved_at, c.done_at,
+            g.topic AS goal_topic
+       FROM cards c
+       LEFT JOIN goals g ON c.goal_id = g.id
+      WHERE c.status IN ('saved', 'done')
+      ORDER BY c.status ASC, COALESCE(c.saved_at, c.created_at) DESC`
+  );
+  const cards = rows.map((r) => ({
+    id: r.id,
+    type: r.type,
+    status: r.status,
+    goal_id: r.goal_id,
+    goal_topic: r.goal_topic,
+    score: r.score,
+    created_at: r.created_at,
+    saved_at: r.saved_at,
+    done_at: r.done_at,
+    payload: parsePayload(r.type, r.payload),
+  }));
+  return sendJson(res, 200, { cards });
+}
+
+async function handleTodoAction(res, card_id, action) {
+  if (!Number.isInteger(card_id)) return sendError(res, 400, 'invalid card id');
+  const card = await queryOne('SELECT id, status FROM cards WHERE id = ?', [card_id]);
+  if (card === null) return sendError(res, 404, 'card not found');
+  if (action === 'done') {
+    if (card.status !== 'saved' && card.status !== 'done') {
+      return sendError(res, 409, `cannot mark done from status=${card.status}`);
+    }
+    await query("UPDATE cards SET status = 'done', done_at = NOW() WHERE id = ?", [card_id]);
+  } else if (action === 'undone') {
+    if (card.status !== 'done' && card.status !== 'saved') {
+      return sendError(res, 409, `cannot unmark from status=${card.status}`);
+    }
+    await query("UPDATE cards SET status = 'saved', done_at = NULL WHERE id = ?", [card_id]);
+  } else if (action === 'delete') {
+    if (card.status !== 'saved' && card.status !== 'done') {
+      return sendError(res, 409, `cannot delete from status=${card.status}`);
+    }
+    await query("UPDATE cards SET status = 'consumed', consumed_at = NOW() WHERE id = ?", [card_id]);
+  } else {
+    return sendError(res, 400, `unknown action ${action}`);
+  }
+  return sendJson(res, 200, { ok: true });
+}
+
 
 async function handleSubmitRequest(body, res) {
   // Validate via the choke point before storing.

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#16181d">
+  <title>To-do · Inspiration Scroll</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">inspiration scroll</div>
+    <nav>
+      <a href="/">feed</a>
+      <a href="/library">library</a>
+      <a href="/settings">settings</a>
+    </nav>
+  </header>
+
+  <main class="page">
+    <h1>To-do list</h1>
+    <p class="summary">Ideas you've saved from the feed. Each has a <strong>copy for Claude</strong> button that puts a clean handoff (title + summary + body + sources + prepared context) on your clipboard, ready to paste into Claude Code.</p>
+    <div id="todos-content">Loading…</div>
+  </main>
+
+  <script src="/markdown.js"></script>
+  <script src="/todos.js"></script>
+</body>
+</html>

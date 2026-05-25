@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS goals (
 CREATE TABLE IF NOT EXISTS cards (
   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   type            ENUM('discovery','codebase','learning') NOT NULL,
-  status          ENUM('queued','active','consumed','expired','mastered') NOT NULL DEFAULT 'queued',
+  status          ENUM('queued','active','consumed','expired','mastered','saved','done') NOT NULL DEFAULT 'queued',
   goal_id         BIGINT UNSIGNED NULL,
   payload         LONGTEXT        NOT NULL,
   score           DOUBLE          NOT NULL DEFAULT 0,
@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS cards (
   seed_recency_at DATETIME        NULL,
   expires_at      DATETIME        NULL,
   consumed_at     DATETIME        NULL,
+  saved_at        DATETIME        NULL,
+  done_at         DATETIME        NULL,
+  engagement_boosted TINYINT(1)   NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
   KEY idx_cards_feed (status, score, created_at),
   KEY idx_cards_goal (goal_id),
@@ -131,16 +134,57 @@ INSERT IGNORE INTO type_appetite (type, weight) VALUES
 
 -- Baked-in settings defaults. All values stored as strings; parsed at read time.
 INSERT IGNORE INTO settings (setting_key, value) VALUES
-  ('queue_target_size',       '20'),
-  ('queue_refill_threshold',  '8'),
-  ('staleness_days',          '7'),
-  ('mastery_streak_required', '5'),
-  ('mastery_recent_window',   '10'),
-  ('mastery_recent_pct',      '0.9'),
-  ('discovery_per_run',       '8'),
-  ('learning_per_run',        '4'),
-  ('codebase_per_run',        '4'),
-  ('run_max_minutes',         '15'),
-  ('llm_model',               'claude-opus-4-7'),
-  ('llm_effort',              'medium'),
-  ('github_username',         '');
+  ('queue_target_size',         '20'),
+  ('queue_refill_threshold',    '8'),
+  ('staleness_days',            '7'),
+  ('mastery_streak_required',   '5'),
+  ('mastery_recent_window',     '10'),
+  ('mastery_recent_pct',        '0.9'),
+  ('discovery_per_run',         '8'),
+  ('learning_per_run',          '4'),
+  ('codebase_per_run',          '4'),
+  ('run_max_minutes',           '15'),
+  ('llm_model',                 'claude-opus-4-7'),
+  ('llm_effort',                'medium'),
+  ('github_username',           ''),
+  ('discussion_max_history',    '20'),
+  ('engagement_boost_threshold','3'),
+  ('engagement_boost_amount',   '0.4');
+
+-- ---------------------------------------------------------------------------
+-- Card discussion threads. One row per message in the thread; the conversation
+-- itself is the memory (the model's "scratchpad" for a card is the static
+-- payload.discussion_context field, populated at generation time and never
+-- mutated here).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS card_messages (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  card_id         BIGINT UNSIGNED NOT NULL,
+  role            ENUM('user','assistant') NOT NULL,
+  content         LONGTEXT        NOT NULL,
+  created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_card_messages_card_time (card_id, created_at),
+  CONSTRAINT fk_card_messages_card FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- In-place migrations for upgrades. Each statement is idempotent: re-running
+-- against a schema already at the target shape is a no-op or a self-replace.
+-- Fresh deploys hit these after CREATE TABLE IF NOT EXISTS already produced
+-- the desired shape, so the ALTERs become no-ops.
+--
+-- If you have pre-discussion-context cards in the table from before this
+-- migration, payload parsing will throw loudly on read. Wipe them with:
+--   DELETE FROM cards WHERE payload NOT LIKE '%discussion_context%';
+-- (Only after confirming you don't want those rows.)
+-- ---------------------------------------------------------------------------
+ALTER TABLE cards
+  MODIFY COLUMN status
+    ENUM('queued','active','consumed','expired','mastered','saved','done')
+    NOT NULL DEFAULT 'queued';
+
+ALTER TABLE cards
+  ADD COLUMN IF NOT EXISTS saved_at        DATETIME    NULL,
+  ADD COLUMN IF NOT EXISTS done_at         DATETIME    NULL,
+  ADD COLUMN IF NOT EXISTS engagement_boosted TINYINT(1) NOT NULL DEFAULT 0;

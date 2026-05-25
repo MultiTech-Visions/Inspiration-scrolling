@@ -72,6 +72,7 @@ function validateDiscovery(p) {
   requireString(p, 'body', 'discovery');
   requireStringArray(p, 'topics', 'discovery');
   requireStringArray(p, 'source_urls', 'discovery');
+  requireString(p, 'discussion_context', 'discovery');
   requireIsoTimestamp(p, 'generated_at', 'discovery');
   if (p.video !== null && p.video !== undefined) {
     if (typeof p.video !== 'object') fail('discovery', 'video', 'must be object or null');
@@ -97,6 +98,7 @@ function validateCodebase(p) {
     requireString(r, 'path', `codebase.references[${i}]`);
     if (r.line !== undefined && r.line !== null) requireInt(r, 'line', `codebase.references[${i}]`, { min: 1 });
   }
+  requireString(p, 'discussion_context', 'codebase');
   requireIsoTimestamp(p, 'generated_at', 'codebase');
 }
 
@@ -127,6 +129,7 @@ function validateLearning(p) {
   requireIsoTimestamp(sr, 'due_at', 'learning.spaced_repetition');
   requireInt(sr, 'reviews', 'learning.spaced_repetition', { min: 0 });
 
+  requireString(p, 'discussion_context', 'learning');
   requireIsoTimestamp(p, 'generated_at', 'learning');
 }
 

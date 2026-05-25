@@ -115,14 +115,20 @@ function renderCard(card) {
 
   const actions = el('div', { class: 'actions' });
   if (card.type === 'learning') {
-    // outcome buttons rendered inside learning body
+    // outcome buttons rendered inside learning body; reaction buttons skipped.
   } else {
-    actions.appendChild(button('👍', 'thumb-up', () => giveFeedback(card.id, { kind: 'thumbs', value: 'up' }, root)));
+    actions.appendChild(button('👍', 'thumb-up',   () => giveFeedback(card.id, { kind: 'thumbs', value: 'up' }, root)));
     actions.appendChild(button('👎', 'thumb-down', () => giveFeedback(card.id, { kind: 'thumbs', value: 'down' }, root, { drop: true })));
-    actions.appendChild(button('♡', 'heart',     () => giveFeedback(card.id, { kind: 'heart' }, root)));
+    actions.appendChild(button('♡', 'heart',       () => giveFeedback(card.id, { kind: 'heart' }, root)));
+    actions.appendChild(button('📌 save', 'save',  () => giveFeedback(card.id, { kind: 'save' }, root, { drop: true })));
   }
+  actions.appendChild(button('💬 discuss', 'discuss', (e) => toggleDiscussion(card, root, e.target)));
   actions.appendChild(button('done', 'done', () => giveFeedback(card.id, { kind: 'consume' }, root, { drop: true })));
   root.appendChild(actions);
+
+  // Discussion drawer is created lazily on first toggle; placeholder slot here.
+  const drawerSlot = el('div', { class: 'discussion-slot' });
+  root.appendChild(drawerSlot);
 
   return root;
 }
@@ -151,7 +157,10 @@ function renderDiscoveryBody(root, p, card) {
         `Watch on ${p.video.provider} →`)));
   }
 
-  root.appendChild(el('div', { class: 'body' }, p.body || ''));
+  const bodyEl = document.createElement('div');
+  bodyEl.className = 'body markdown';
+  bodyEl.innerHTML = window.renderMarkdown(p.body || '');
+  root.appendChild(bodyEl);
 
   if (Array.isArray(p.source_urls) && p.source_urls.length > 0) {
     const sources = el('ul', { class: 'sources' });
@@ -171,7 +180,10 @@ function renderCodebaseBody(root, p, card) {
     root.appendChild(el('p', { class: 'summary' },
       `${p.repo.owner}/${p.repo.name} (${p.repo.ref}) · ${p.finding_kind || ''}`));
   }
-  root.appendChild(el('div', { class: 'body' }, p.body || ''));
+  const bodyEl = document.createElement('div');
+  bodyEl.className = 'body markdown';
+  bodyEl.innerHTML = window.renderMarkdown(p.body || '');
+  root.appendChild(bodyEl);
   if (Array.isArray(p.references) && p.references.length > 0) {
     const refs = el('ul', { class: 'refs' });
     for (const r of p.references) {
@@ -182,11 +194,17 @@ function renderCodebaseBody(root, p, card) {
 }
 
 function renderLearningBody(root, p, card) {
-  root.appendChild(el('p', null, p.prompt_text || ''));
+  const promptEl = document.createElement('div');
+  promptEl.className = 'body markdown';
+  promptEl.innerHTML = window.renderMarkdown(p.prompt_text || '');
+  root.appendChild(promptEl);
 
   if (p.subtype === 'tidbit') {
     if (p.answer_text) {
-      root.appendChild(el('div', { class: 'reveal shown' }, p.answer_text));
+      const tidbit = document.createElement('div');
+      tidbit.className = 'reveal shown markdown';
+      tidbit.innerHTML = window.renderMarkdown(p.answer_text);
+      root.appendChild(tidbit);
     }
     appendOutcomeButtons(root, card);
     return;
@@ -210,13 +228,18 @@ function renderLearningBody(root, p, card) {
     });
     root.appendChild(opts);
     if (p.answer_text) {
-      root.appendChild(el('div', { class: 'reveal' }, p.answer_text));
+      const rev = document.createElement('div');
+      rev.className = 'reveal markdown';
+      rev.innerHTML = window.renderMarkdown(p.answer_text);
+      root.appendChild(rev);
     }
     return;
   }
 
   // flashcard/question
-  const reveal = el('div', { class: 'reveal' }, p.answer_text || '');
+  const reveal = document.createElement('div');
+  reveal.className = 'reveal markdown';
+  reveal.innerHTML = window.renderMarkdown(p.answer_text || '');
   const showBtn = button('reveal', '', () => {
     reveal.classList.add('shown');
     showBtn.style.display = 'none';
@@ -266,6 +289,124 @@ async function giveFeedback(card_id, body, rootEl, opts = {}) {
     }
   } catch (err) {
     alert('Feedback failed: ' + err.message);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Discussion drawer. Created lazily under each card; one open/close toggle.
+// -----------------------------------------------------------------------------
+async function toggleDiscussion(card, cardRoot, triggerBtn) {
+  const slot = cardRoot.querySelector('.discussion-slot');
+  if (slot.firstChild) {
+    // Already opened — collapse / re-expand.
+    slot.classList.toggle('collapsed');
+    triggerBtn.classList.toggle('active');
+    return;
+  }
+  triggerBtn.classList.add('active');
+  slot.appendChild(buildDiscussionDrawer(card));
+  await loadDiscussionHistory(card.id, slot);
+}
+
+function buildDiscussionDrawer(card) {
+  const drawer = el('div', { class: 'discussion' });
+
+  const toggleCtxBtn = button('👁 show prepared context', 'ctx-toggle', () => {
+    const ctx = drawer.querySelector('.prepared-context');
+    const open = ctx.classList.toggle('shown');
+    toggleCtxBtn.textContent = open ? '🙈 hide prepared context' : '👁 show prepared context';
+  });
+
+  const ctxBlock = document.createElement('div');
+  ctxBlock.className = 'prepared-context markdown';
+  ctxBlock.innerHTML = window.renderMarkdown(card.payload.discussion_context || '');
+
+  const thread = el('div', { class: 'thread', 'data-card-id': card.id });
+  const loading = el('div', { class: 'thread-loading' }, 'loading conversation…');
+  thread.appendChild(loading);
+
+  const inputArea = el('div', { class: 'discussion-input' });
+  const textarea = document.createElement('textarea');
+  textarea.placeholder = 'Ask about this card…';
+  textarea.rows = 2;
+  const sendBtn = button('send', 'send', async () => {
+    const text = textarea.value.trim();
+    if (text.length === 0) return;
+    sendBtn.disabled = true;
+    textarea.disabled = true;
+    appendThreadMessage(thread, 'user', text);
+    appendThreadMessage(thread, 'assistant', '…thinking…', { pending: true });
+    try {
+      const result = await api(`/api/cards/${card.id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ content: text }),
+      });
+      thread.querySelector('.thread-message.pending')?.remove();
+      appendThreadMessage(thread, 'assistant', result.reply);
+      if (result.engagement && result.engagement.applied) {
+        const banner = el('div', { class: 'engagement-banner' },
+          `✨ topic-weight boost applied (you've engaged with this card ${result.engagement.user_messages} times)`);
+        thread.appendChild(banner);
+      }
+      textarea.value = '';
+    } catch (err) {
+      thread.querySelector('.thread-message.pending')?.remove();
+      appendThreadMessage(thread, 'assistant', '_(failed: ' + err.message + ')_');
+    } finally {
+      sendBtn.disabled = false;
+      textarea.disabled = false;
+      textarea.focus();
+    }
+  });
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      sendBtn.click();
+    }
+  });
+  inputArea.appendChild(textarea);
+  inputArea.appendChild(sendBtn);
+
+  drawer.appendChild(toggleCtxBtn);
+  drawer.appendChild(ctxBlock);
+  drawer.appendChild(thread);
+  drawer.appendChild(inputArea);
+  return drawer;
+}
+
+function appendThreadMessage(thread, role, content, opts = {}) {
+  // Clear "loading" placeholder if present.
+  thread.querySelector('.thread-loading')?.remove();
+  const wrap = document.createElement('div');
+  wrap.className = `thread-message ${role}${opts.pending ? ' pending' : ''}`;
+  const label = document.createElement('div');
+  label.className = 'role';
+  label.textContent = role === 'user' ? 'you' : 'claude';
+  const body = document.createElement('div');
+  body.className = 'message-body markdown';
+  body.innerHTML = window.renderMarkdown(content);
+  wrap.appendChild(label);
+  wrap.appendChild(body);
+  thread.appendChild(wrap);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+async function loadDiscussionHistory(card_id, slot) {
+  const thread = slot.querySelector('.thread');
+  try {
+    const data = await api(`/api/cards/${card_id}/messages`);
+    thread.querySelector('.thread-loading')?.remove();
+    if (data.messages.length === 0) {
+      thread.appendChild(el('div', { class: 'thread-empty' },
+        'No messages yet. Ask anything about this card — Claude has its body and a hidden prepared-context block on hand.'));
+      return;
+    }
+    for (const m of data.messages) {
+      appendThreadMessage(thread, m.role, m.content);
+    }
+  } catch (err) {
+    thread.innerHTML = '';
+    thread.appendChild(el('div', { class: 'thread-empty err' }, 'Failed to load: ' + err.message));
   }
 }
 

@@ -344,3 +344,163 @@ a:hover { color: var(--accent); }
 .status-row .ok { color: var(--positive); }
 .status-row .running { color: var(--accent); }
 .status-row .err { color: var(--negative); }
+
+/* ----- Markdown rendering inside cards ------------------------------------ */
+.markdown h3, .markdown h4, .markdown h5, .markdown h6 {
+  font-weight: 500;
+  margin: 18px 0 6px;
+  color: var(--text);
+  line-height: 1.3;
+}
+.markdown h3 { font-size: 1.1rem; color: var(--accent); }
+.markdown h4 { font-size: 1.0rem; }
+.markdown h5, .markdown h6 { font-size: 0.95rem; color: var(--text-dim); }
+.markdown p { margin: 0 0 12px; }
+.markdown ul, .markdown ol { margin: 0 0 12px; padding-left: 22px; }
+.markdown li { margin-bottom: 4px; }
+.markdown a { color: var(--link); text-decoration: underline; text-decoration-color: var(--accent-dim); }
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.markdown pre {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0 0 14px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.markdown pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+.markdown blockquote {
+  border-left: 3px solid var(--accent-dim);
+  padding: 4px 12px;
+  color: var(--text-dim);
+  margin: 0 0 12px;
+}
+.markdown strong { color: var(--text); }
+.markdown em { color: var(--text); }
+
+/* ----- Discussion drawer -------------------------------------------------- */
+.card .actions .discuss.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.discussion-slot:empty { display: none; }
+.discussion-slot.collapsed > .discussion { display: none; }
+.discussion {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border);
+}
+.discussion .ctx-toggle {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  margin-bottom: 8px;
+  font-family: inherit;
+}
+.discussion .ctx-toggle:hover { color: var(--accent); }
+.discussion .prepared-context {
+  display: none;
+  background: var(--bg-elev);
+  border: 1px dashed var(--accent-dim);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  font-size: 0.88rem;
+  color: var(--text-dim);
+}
+.discussion .prepared-context.shown { display: block; }
+.discussion .thread {
+  max-height: 460px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.discussion .thread-empty, .discussion .thread-loading {
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  font-style: italic;
+  padding: 8px 0;
+}
+.discussion .thread-empty.err { color: var(--negative); font-style: normal; }
+.discussion .thread-message {
+  border-radius: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.discussion .thread-message.user {
+  background: var(--bg-card);
+  border-color: var(--accent-dim);
+}
+.discussion .thread-message .role {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.discussion .thread-message.user .role { color: var(--accent); }
+.discussion .thread-message.pending { opacity: 0.65; font-style: italic; }
+.discussion .engagement-banner {
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--accent);
+  padding: 8px 12px;
+  background: var(--bg-elev);
+  border: 1px dashed var(--accent-dim);
+  border-radius: 8px;
+}
+.discussion-input {
+  display: flex;
+  gap: 8px;
+}
+.discussion-input textarea {
+  flex: 1;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 0.92rem;
+  resize: vertical;
+  min-height: 44px;
+}
+.discussion-input textarea:focus { border-color: var(--accent); outline: none; }
+.discussion-input .send {
+  align-self: flex-end;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-dim);
+  color: var(--text);
+  padding: 10px 16px;
+}
+.discussion-input .send:disabled { opacity: 0.5; cursor: default; }
+
+/* ----- To-do page --------------------------------------------------------- */
+.card.todo .actions .copy {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+.card.todo .actions .copy:hover { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.card.todo.done { opacity: 0.62; }
+.card.todo.done h2 { text-decoration: line-through; text-decoration-color: var(--accent-dim); }
