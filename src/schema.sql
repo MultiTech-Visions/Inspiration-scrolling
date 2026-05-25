@@ -151,7 +151,8 @@ INSERT IGNORE INTO settings (setting_key, value) VALUES
   ('engagement_boost_threshold','3'),
   ('engagement_boost_amount',   '0.4'),
   ('blocked_domains',           ''),
-  ('discovery_search_max_uses', '4');
+  ('discovery_search_max_uses', '4'),
+  ('codebase_tool_max_steps',   '12');
 
 -- ---------------------------------------------------------------------------
 -- Card discussion threads. One row per message in the thread; the conversation

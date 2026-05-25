@@ -1,14 +1,19 @@
 'use strict';
 
-const { callPipelineStep } = require('../llm');
+const { runAgenticStep } = require('../llm');
+const { getInt } = require('../settings');
 const github = require('../github');
+const { GITHUB_TOOLS, makeGithubDispatch } = require('../githubTools');
 const { insertCard } = require('../cards');
 
 // Codebase cards are only generated for an explicit user request — never
-// speculatively. Scope is the requested repo(s) only.
+// speculatively. Scope is the requested repo. The model gets read-only GitHub
+// tools (PRs, commits, issues) and is expected to investigate what is actually
+// moving in the repo before writing a finding.
 async function synthesizeCodebaseForRequest(req) {
   const { owner, name } = req.body.repo;
   const focus = req.body.focus || '';
+  const maxSteps = await getInt('codebase_tool_max_steps');
 
   const [meta, langs, readme, manifest] = await Promise.all([
     github.fetchRepoMetadata(owner, name),
@@ -19,7 +24,7 @@ async function synthesizeCodebaseForRequest(req) {
 
   const ref = meta.default_branch || 'main';
 
-  const dataBlock = [
+  const initialMessage = [
     `=== Repository: ${owner}/${name} ===`,
     `Default branch: ${ref}`,
     `Description: ${meta.description || '(none)'}`,
@@ -34,25 +39,29 @@ async function synthesizeCodebaseForRequest(req) {
     '=== Manifest ===',
     manifest ? `path=${manifest.path}\n${manifest.body.slice(0, 4000)}` : '(no manifest found)',
     '',
-    'Pick ONE concrete finding — security update, dead dependency, efficiency opportunity, or refactor — and write a card pointing at it. Cite real file paths from the manifest or README; do not invent paths.',
+    `You have read-only GitHub tools available (list_pull_requests, get_pull_request, get_pull_request_files, get_pull_request_comments, get_pull_request_commits, list_commits, get_commit, list_issues, get_issue). Use them to investigate what is actually moving in this repo — open PRs, recently merged work, in-flight discussions, recent commits, open issues. Your tool-call budget for this card is ${maxSteps} calls. When you have enough signal, return the final card JSON (no further tool calls).`,
   ].filter(Boolean).join('\n');
 
-  const { parsed } = await callPipelineStep({
+  const dispatch = makeGithubDispatch(owner, name);
+
+  const { parsed, toolTrace } = await runAgenticStep({
     promptKey: 'synthesize_codebase',
-    dataBlock,
-    maxTokens: 3000,
+    initialMessage,
+    tools: GITHUB_TOOLS,
+    dispatch,
+    maxTokens: 4000,
+    maxSteps,
   });
 
   parsed.repo = { owner, name, ref };
   parsed.generated_at = new Date().toISOString();
-  // references is required by the schema — if the model didn't return one,
-  // we let validation throw loudly downstream rather than fabricate an empty array.
 
   const card_id = await insertCard({
     type: 'codebase',
     payload: parsed,
     score: 8.0,
   });
+  console.log(`codebase card ${card_id} (${owner}/${name}): ${toolTrace.length} tool calls`);
   return card_id;
 }
 

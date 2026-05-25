@@ -34,7 +34,7 @@ You need:
 - Node 20+ and npm
 - A local MySQL 8 (or remote)
 - An Anthropic API key
-- (Optional) a GitHub personal access token, to lift the unauthenticated rate limit
+- A GitHub personal access token. For codebase audits, use a **fine-grained PAT, read-only**, scoped to the repos you want audited, with: Metadata (read), Contents (read), Pull requests (read), Issues (read). Without one, the unauthenticated public API still works for activity ingestion on public repos, but codebase audits will be heavily rate-limited and can't touch private repos.
 
 ```sh
 npm install
@@ -124,10 +124,11 @@ The run pipeline triggers from four places. All four call the same `runOnce({ tr
 - Optional `video` payload: YouTube gets in-house iframe, Twitter/X/Instagram/Reddit get link-outs (embedding is unreliable/blocked there)
 
 ### codebase
-- Model reasoning over your repo (metadata, README, manifest)
+- Model reasoning over your repo, **agent-style**: an agentic loop with read-only GitHub tools (`list_pull_requests`, `get_pull_request_files`, `list_commits`, `get_commit`, `list_issues`, `get_issue`, etc.). The model decides what to look at and digs in — README + manifest are just the kickoff context.
 - Scoped to the repo you requested — never speculatively generated
 - Findings tagged `security` / `dead_dep` / `efficiency` / `refactor`
-- File/line references must come from the real repo data; the prompt explicitly forbids inventing paths
+- File/line references must come from PRs/commits/manifest the model actually retrieved; the prompt explicitly forbids inventing paths
+- Tool-call budget per card is `codebase_tool_max_steps` (default 12)
 - NOT followable (no real "source" beyond the repo itself)
 
 ### learning
@@ -200,6 +201,7 @@ All stored as strings in the `settings` table; seeded with defaults so it works 
 | `engagement_boost_amount`        | 0.4              | Topic-weight delta applied at the threshold                        |
 | `blocked_domains`                | (empty)          | Comma-separated domains the discovery `web_search` must skip       |
 | `discovery_search_max_uses`      | 4                | Max `web_search` calls the model can make per discovery card       |
+| `codebase_tool_max_steps`        | 12               | Max GitHub tool calls the agent loop can make per codebase card    |
 
 ## HTTP routes
 
@@ -250,7 +252,8 @@ GET  /api/cards/:id/sources         provenance sources for a card
 │   ├── prompts.js            # editable prompts + DEFAULT_INSTRUCTIONS + ensureDefaultPrompts
 │   ├── llm.js                # Anthropic SDK boundary for the pipeline (themes, synthesis)
 │   ├── conversation.js       # Anthropic SDK boundary for per-card discussion threads
-│   ├── github.js             # GitHub Events / repo metadata / README / manifest fetchers
+│   ├── github.js             # GitHub Events / repo metadata / README / manifest / PRs / commits / issues
+│   ├── githubTools.js        # Anthropic tool defs + dispatcher for the codebase agent loop
 │   ├── sources.js            # upsert + follow + attach
 │   ├── cards.js              # the feed query, insert path, card lifecycle helpers
 │   ├── run.js                # the one orchestrator (scheduled/manual/immediate/refill)
@@ -259,7 +262,7 @@ GET  /api/cards/:id/sources         provenance sources for a card
 │       ├── activity.js       # GitHub activity → compact summary for the LLM
 │       ├── themes.js         # LLM step: activity + preferences → themes
 │       ├── discovery.js      # LLM step: theme + web_search → discovery card
-│       ├── codebase.js       # LLM step: repo data → codebase card
+│       ├── codebase.js       # Agent loop: repo data + GitHub tools → codebase card
 │       └── learning.js       # LLM step + spaced repetition + auto-mastery + goal lifecycle
 └── public/
     ├── index.html            # feed

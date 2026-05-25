@@ -118,4 +118,111 @@ function stripCodeFence(s) {
   return body.trim();
 }
 
-module.exports = { callPipelineStep };
+// Agentic pipeline step: same instruction-then-data shape, but the model has
+// client-side tools available and we loop until it stops calling them (or we
+// hit the step budget). The final text block is parsed as JSON exactly like
+// callPipelineStep.
+async function runAgenticStep({
+  promptKey,
+  initialMessage,
+  tools,
+  dispatch,
+  maxTokens = 4096,
+  maxSteps = 12,
+}) {
+  if (typeof promptKey !== 'string' || promptKey.length === 0) {
+    throw new Error('runAgenticStep requires promptKey');
+  }
+  if (typeof initialMessage !== 'string' || initialMessage.length === 0) {
+    throw new Error('runAgenticStep requires initialMessage');
+  }
+  if (!Array.isArray(tools) || tools.length === 0) {
+    throw new Error('runAgenticStep requires non-empty tools array');
+  }
+  if (typeof dispatch !== 'function') {
+    throw new Error('runAgenticStep requires dispatch function');
+  }
+
+  const instruction = await getInstruction(promptKey);
+  const model = await getString('llm_model');
+  const effort = await getString('llm_effort');
+
+  const messages = [{ role: 'user', content: initialMessage }];
+  const toolTrace = [];
+  let response = null;
+
+  for (let step = 0; step < maxSteps; step++) {
+    response = await client().messages.create({
+      model,
+      max_tokens: maxTokens,
+      thinking: { type: 'adaptive' },
+      output_config: { effort },
+      system: [
+        {
+          type: 'text',
+          text: instruction,
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+      messages,
+      tools,
+    });
+
+    if (response.stop_reason !== 'tool_use') break;
+
+    messages.push({ role: 'assistant', content: response.content });
+
+    const toolResults = [];
+    for (const block of response.content) {
+      if (block.type !== 'tool_use') continue;
+      let result;
+      let isError = false;
+      try {
+        result = await dispatch(block.name, block.input || {});
+      } catch (err) {
+        result = { error: String(err.message || err) };
+        isError = true;
+      }
+      const serialized = typeof result === 'string' ? result : JSON.stringify(result);
+      const resultBlock = {
+        type: 'tool_result',
+        tool_use_id: block.id,
+        content: serialized,
+      };
+      if (isError) resultBlock.is_error = true;
+      toolResults.push(resultBlock);
+      toolTrace.push({ step, name: block.name, input: block.input, ok: !isError });
+    }
+
+    messages.push({ role: 'user', content: toolResults });
+  }
+
+  if (!response) {
+    throw new Error(`runAgenticStep ${promptKey}: no response produced`);
+  }
+
+  let raw = null;
+  for (const block of response.content) {
+    if (block.type === 'text') raw = block.text;
+  }
+  if (raw === null) {
+    throw new Error(`runAgenticStep ${promptKey} ended without final text block (stop_reason=${response.stop_reason}, steps=${toolTrace.length}). Likely hit maxSteps=${maxSteps} mid-loop.`);
+  }
+
+  const trimmed = stripCodeFence(raw.trim());
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    throw new Error(`runAgenticStep ${promptKey} returned non-JSON: ${err.message}. Raw started with: ${trimmed.slice(0, 200)}`);
+  }
+
+  return {
+    parsed,
+    toolTrace,
+    usage: response.usage,
+    stop_reason: response.stop_reason,
+  };
+}
+
+module.exports = { callPipelineStep, runAgenticStep };
