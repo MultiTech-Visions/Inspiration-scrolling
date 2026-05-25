@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#16181d">
+  <title>Settings · Inspiration Scroll</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">inspiration scroll</div>
+    <nav>
+      <a href="/">feed</a>
+      <a href="/todos">to-do</a>
+      <a href="/library">library</a>
+    </nav>
+  </header>
+
+  <main class="page">
+    <h1>Settings</h1>
+
+    <div id="status-row" class="status-row">Loading run status…</div>
+
+    <div class="button-row">
+      <button id="run-now" type="button" class="primary">Run now</button>
+      <button id="force-release" type="button">Force-release lock</button>
+    </div>
+
+    <h2>Submit a request</h2>
+    <div class="settings-grid">
+      <label>intent</label>
+      <select id="req-intent">
+        <option value="learning_goal">learning_goal</option>
+        <option value="codebase_audit">codebase_audit</option>
+        <option value="discovery_topic">discovery_topic</option>
+      </select>
+
+      <label>topic / repo (owner/name)</label>
+      <input id="req-topic" type="text" placeholder="e.g. Rust async runtimes  OR  user/repo">
+
+      <label>focus (optional)</label>
+      <input id="req-focus" type="text" placeholder="e.g. security only">
+
+      <label>immediate (fire now)</label>
+      <input id="req-immediate" type="checkbox">
+    </div>
+    <div class="button-row">
+      <button id="submit-request" type="button" class="primary">Submit</button>
+    </div>
+
+    <h2>Configuration</h2>
+    <div id="settings-grid" class="settings-grid"></div>
+    <div class="button-row">
+      <button id="save-settings" type="button" class="primary">Save settings</button>
+    </div>
+
+    <h2>Editable prompts</h2>
+    <p class="summary">These are the per-step instruction blocks. The data block (recent activity, themes, sources, goal context) is appended after this text in code — never interpolated into the instruction.</p>
+    <div id="prompts-list"></div>
+  </main>
+
+  <script src="/settings.js"></script>
+</body>
+</html>
